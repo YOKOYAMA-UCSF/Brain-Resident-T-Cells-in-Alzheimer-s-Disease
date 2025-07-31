@@ -1,0 +1,13 @@
+# Ignore logs
+**/logs
+*.log
+
+# Ignore VCFs
+*.vcf
+*.vcf.gz
+
+# Ignore fastqs
+*.fastq
+*.fastq.gz
+
+#customize for your project below!
