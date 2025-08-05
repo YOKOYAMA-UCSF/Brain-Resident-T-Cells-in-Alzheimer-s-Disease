@@ -1,31 +1,35 @@
 ---
 title: "My_Project.md"
-author: "First Last"
-date: "2023-12-01"
+author: "Jake Oxendine"
+date: "2025-08-01"
 output: github_document
 ---
-# Title of My Project
+# Single-Nucleus RNA-seq Reveals No Increase in Brain-Resident T Cells in Alzheimer’s Disease Prefrontal Cortex or Hippocampus
    
 ## Background/Overview
 
-Describe here the background and motiviation for completing this project.
+The goal of this project was to examine the abundance of Brain-Resident T cells in Alzheimer's Disease(AD) prefrontal cortex(PFC) and hippocampus to better understand the role of the adaptive immune system in AD pathology. This git hub serves as the companion to the paper for ease of reproducibility of results.
 
-References:
-* Link 1
-* Link 2
-* Link 3
 
-## Project Aims
-Aim 1: 
+## Analysis
 
-Aim 2:
+###  Recapitulation of previously described microglial subtype expansion
+This analysis replicates a previously identified expansion of 
 
-## Analysis Plan
+###  No expansion of T cells in PFC in AD in the ROSMAP dataset
 
-#### Data Preprocessing
+###  No increase in interferon signaling genes in AD
 
-* Step 1: Link to script. 
-* Step 2: Link to script.
+###  No expansion of T cells in AD in SEA-AD DLPFC
+
+###  Replication of CD8+ T cell expansion in SEA-AD MTG
+
+###  No expansion of T cells in the hippocampus in AD in the ROSMAP dataset
+
+
+## Data Aquisition
+
+Data was acquired from. For ease of replication, config files are provided to provide your own paths to the data downloaded
 
 #### Aim 1
 * Analysis 1: We will use this software: ____  to do ____.
@@ -71,9 +75,7 @@ project_directory # The working directory
 
 ## Expected Results
 
-Describe your expected results here. 
-
-If the project is completed, describe the format, location of output data.
+Our major findings include
 
 ## Responsibilities and Acknowledgements
 
