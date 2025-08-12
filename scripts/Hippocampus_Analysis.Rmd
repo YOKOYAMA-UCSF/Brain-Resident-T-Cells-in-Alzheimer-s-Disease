@@ -1,0 +1,180 @@
+---
+title: "ROSMAP Hippocampus Analysis"
+format: html
+editor: visual
+---
+
+
+### Set up
+
+Read in config and utility functions
+
+```{r}
+source("../scripts/configs/Hippocampus_Config.R")
+source("../scripts/utility_scripts/seurat_functions.R")
+```
+
+
+### Reading in the data
+
+```{r}
+all_cells<-readRDS(paste0(PATH_TO_SEURAT_OBJ,".rds"))
+```
+
+### Filter for immune cells
+
+```{r}
+immune_cells<-all_cells %>%subset(subset = cell_type_high_resolution=="T cells"|cell_type_high_resolution=="CAMs"|grepl("Mic", cell_type_high_resolution, ignore.case = FALSE))
+```
+
+### Standard Seurat Clustering workflow
+
+```{r}
+set.seed(1)
+immune_cells<-RunPCA(immune_cells %>% FindVariableFeatures() %>% ScaleData(), npcs  = 30, verbose = FALSE)
+immune_cells<-RunUMAP(immune_cells, reduction="pca",dims =1:30)
+immune_cells<-FindNeighbors(immune_cells,reduction="pca",dims= 1:30)
+immune_cells <- FindClusters(immune_cells, resolution = 0.5)
+DimPlot(immune_cells,label = T)
+```
+
+## T Cell analysis workflow
+
+### Filter for T cells
+
+```{r}
+T_cells<-immune_cells %>% subset(subset = cell_type_high_resolution == "T cells")
+seurat<-T_cells
+set.seed(1)
+seurat <- NormalizeData(object = seurat)
+seurat <- FindVariableFeatures(object = seurat,selection.method = "vst", nfeatures = 2000)
+seurat <- ScaleData(object = seurat)
+seurat <- RunPCA(object = seurat)
+seurat <- FindNeighbors(object = seurat, dims = 1:20)
+seurat <- FindClusters(object = seurat, resolution = 1.2)
+seurat <- RunUMAP(object = seurat, dims = 1:20)
+plot<-DimPlot(object = seurat, reduction = "umap",label = TRUE)
+T_cell_list<-list(seurat=seurat,
+               DimPlot=plot)
+ggsave("../output/figure_4/panel_4_A.tiff", plot = T_cell_list$DimPlot,
+       width = 6, height = 4, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")
+T_cell_list$DimPlot
+```
+
+```{r}
+p<-DotPlot(T_cell_list$seurat,assay="RNA", features = c("CD8A","CD8B","CD4","CD3E","CD3G","NCAM1"),scale=FALSE)+ theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+ggsave("../output/figure_4/panel_4_b.tiff", plot = p,
+       width = 6, height = 4, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")
+p
+```
+
+```{r}
+T_cell_list$seurat@meta.data %>% group_by(seurat_clusters) %>%summarise(n=n(),unique_donors=length(base::unique(projid)))
+```
+
+### Assign Cluster value
+
+```{r}
+T_cell_list$seurat@meta.data$seurat_clusters <- recode(T_cell_list$seurat@meta.data$seurat_clusters %>% as.factor(),`7` = "CD8" ,`1` = "CD8",`2` = "CD8",`3` = "CD8" )
+```
+
+### Read in ROSMAP patient data
+
+```{r}
+immune_meta<-immune_cells@meta.data
+meta_data<-read.csv(paste0(PATH_TO_META_DATA,".csv"))
+clinical<-read.csv(paste0(PATH_TO_CLINICAL_DATA,".csv"))
+indi_meta<-read.table(paste0(PATH_TO_INDIVIDUAL_META_DATA,".tsv"),header = TRUE)
+
+```
+
+### Set up for abundance analysis
+
+```{r}
+# Getting Subclusters at the individual level
+individual_sub_clust<-T_cell_list$seurat@meta.data %>% group_by(projid,seurat_clusters) %>% summarise(count=n())
+individual_total_cells<-immune_meta %>% group_by(projid) %>% summarise(count=n())
+
+# Pivot to column format
+individual_sub_clust<-pivot_wider(individual_sub_clust, id_cols = projid,values_from = count,names_from = seurat_clusters)
+
+# Merge with clinical data
+clinical<- merge(clinical,individual_sub_clust,by="projid")
+clinical$total_cells<-individual_total_cells$count[match(clinical$projid,individual_total_cells$projid)]
+
+
+
+clinical$subject<-meta_data$subject[match(clinical$individualID,meta_data$individualID)]
+full_set<-merge(clinical,indi_meta, by="subject" )
+```
+
+### Scale by total immune cells and filter out low cell counts
+
+```{r}
+full_set<-full_set %>% mutate(norm_CD8=CD8/total_cells)
+final<-full_set %>% filter(total_cells > 50)
+```
+
+### Abundance Analysis
+
+```{r}
+cd8<-Abudance_analysis(final,column = "norm_CD8",log_prop =  FALSE,covariates =  COVARIATES, disease = "Pathologic_diagnosis_of_AD")
+```
+
+
+```{r}
+cd8$wilcox_test
+```
+
+```{r}
+cd8$chi_squared_test
+```
+
+```{r}
+cd8$model %>% summary()
+```
+
+```{r}
+plot2 <- ggplot() + geom_violin(data = final, aes(y = norm_CD8, Pathologic_diagnosis_of_AD, fill = Pathologic_diagnosis_of_AD)) + geom_jitter (data = final, aes(y = norm_CD8, Pathologic_diagnosis_of_AD, fill = Pathologic_diagnosis_of_AD),width = 0.25, size=0.5)+labs(y = "CD8+ T Cells (fraction of total immune cells)",x = NULL) + theme_classic()+scale_x_discrete(labels = c("no" = "Control", "yes" = "AD (PathDx)")) +scale_fill_manual(values=c("#999999", "#a256e9"))+ theme(legend.position="none",axis.text.x =element_text(size=14,face="bold"),axis.title=element_text(size=14))
+ggsave("../output/figure_4/panel_4_C.tiff", plot = plot2,
+       width = 4, height = 6, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")         
+plot2
+```
+
+### Table one generation
+```{r}
+library(tableone)
+library(labelled)
+
+cd8_tab<-final %>% filter(norm_CD8>0)
+# Add variable labels
+var_label(cd8_tab$age_death.y) <- "Age at Death (years)"
+var_label(cd8_tab$msex.x) <- "Sex (Male)"
+var_label(cd8_tab$pmi.y) <- "PMI"
+var_label(cd8_tab$apoe_genotype) <- "APOE_Genotype"
+## Vector of variables to summarize
+myVars <- c("msex.x","pmi.y","age_death.y","apoe_genotype")
+## Vector of categorical variables that need transformation
+catVars <- c("msex.x","age_death.y","apoe_genotype")
+## Create a TableOne object
+tab2 <- CreateTableOne(vars = myVars, data = cd8_tab, factorVars = catVars,strata="Pathologic_diagnosis_of_AD")
+tab2
+```
+
+```{r}
+tab2Mat <- print(tab2, exact = "stage", quote = FALSE, noSpaces = TRUE, printToggle = FALSE,varLabels=TRUE)
+## Save to a CSV file
+write.csv(tab2Mat, file = "../output/supplementary_tables/Hippocampus_Table_APOE.csv")
+```
+
+### APOE Model
+
+```{r}
+multivar<-glm(norm_CD8~pmi.y+msex.x+Pathologic_diagnosis_of_AD+age_death.y+as.factor(apoe_genotype),data=final)
+summary(multivar)
+```

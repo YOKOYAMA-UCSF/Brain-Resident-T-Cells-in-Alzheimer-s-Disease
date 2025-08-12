@@ -1,0 +1,184 @@
+---
+title: "ROSMAP_Microglia_Analysis"
+format: html
+editor: visual
+---
+
+# Replicating Microglia Abundance Analysis
+
+The goal of this document is to replicate the microglia abundance differences observed in the Sun [paper](https://www.sciencedirect.com/science/article/pii/S0092867423009716?via%3Dihub).
+
+### Set up
+
+```{r}
+source("../scripts/configs/ROSMAP_microglia_Config.R")
+source("../scripts/utility_scripts/seurat_functions.R")
+```
+
+## Analysis workflow
+
+### Reading in the data
+
+```{r}
+immune_cells<-readRDS(paste0(PATH_TO_SEURAT_OBJ,".rds"))
+```
+
+### Standard Seurat Clustering workflow
+
+```{r}
+set.seed(1)
+immune_cells<-RunPCA(immune_cells %>% FindVariableFeatures() %>% ScaleData(), npcs  = 30, verbose = FALSE)
+immune_cells<-RunUMAP(immune_cells, reduction="pca",dims =1:30)
+immune_cells<-FindNeighbors(immune_cells,reduction="pca",dims= 1:30)
+immune_cells <- FindClusters(immune_cells, resolution = 0.5)
+p1=DimPlot(immune_cells,label = T)
+ggsave("../output/figure_1/panel_1_A.tiff", plot = p1,
+       width = 6, height = 4, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")
+p1
+```
+
+### Highlight Dimplot
+
+```{r}
+highlight_clusters <- c("4", "10")
+all_clusters <- levels(immune_cells$seurat_clusters)
+
+# Create a color vector with gray for all clusters
+cluster_colors <- rep("lightgray", length(all_clusters))
+names(cluster_colors) <- all_clusters
+
+# Assign specific colors to the highlighted clusters
+cluster_colors[highlight_clusters] <- c("darkolivegreen4", "deepskyblue2")  
+
+highlight<-DimPlot(immune_cells, group.by = "seurat_clusters", cols = cluster_colors,label = TRUE) +
+  theme(legend.position = "none")
+ggsave("../output/figure_1/panel_1_A.tiff", plot = highlight,
+width = 6, height = 4, units = "in", dpi = 600,
+device = "tiff", compression = "lzw")
+highlight
+```
+
+### Subset for only microglia
+```{r}
+micro<-subset(immune_cells,subset =(seurat_clusters!=10)&(seurat_clusters!=16)&(seurat_clusters!=18))
+DimPlot(micro,label = T)
+```
+
+**Identifying similar clusters for comparison**
+
+Genes being looked at are marker genes from figure 2 of sun paper
+
+```{r fig.height=10, fig.width=10}
+DefaultAssay(immune_cells) <- "RNA"
+immune_cells<-NormalizeData(object=immune_cells,normalization.method = 'LogNormalize', 
+                scale.factor = 10000)
+p2=VlnPlot(immune_cells,assay="RNA",slot='data', features = c("FRMD4A","INO80D","MYO1E","PTPRG","SPON1","LRRK2","FOXP1"),raster=FALSE,pt.size = 0.0,ncol = 2)
+ggsave("../output/figure_1/panel_1_B.tiff", plot = p2,
+       width = 10, height = 10, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")
+p2
+```
+
+Cluster 4 is the lipid processing microglia
+
+### Assign Cluster value
+
+```{r}
+immune_cells@meta.data$seurat_clusters <- recode(immune_cells@meta.data$seurat_clusters %>% as.factor(), `4` = "Lipid" )
+```
+
+### Read in ROSMAP patient data
+
+```{r}
+immune_meta<-immune_cells@meta.data
+meta_data<-read.csv(paste0(PATH_TO_META_DATA,".csv"))
+clinical<-read.csv(paste0(PATH_TO_CLINICAL_DATA,".csv"))
+indi_meta<-read.table(paste0(PATH_TO_INDIVIDUAL_META_DATA,".tsv"),header = TRUE)
+
+```
+
+### Set up for abundance analysis
+
+```{r}
+# Getting Subclusters at the individual level
+individual_sub_clust<-immune_meta %>% group_by(projid,seurat_clusters) %>% summarise(count=n())
+individual_total_cells<-immune_meta %>% group_by(projid) %>% summarise(count=n())
+
+# Pivot to column format
+individual_sub_clust<-pivot_wider(individual_sub_clust, id_cols = projid,values_from = count,names_from = seurat_clusters)
+
+# Merge with clinical data
+clinical<- merge(clinical,individual_sub_clust,by="projid")
+clinical$total_cells<-individual_total_cells$count[match(clinical$projid,individual_total_cells$projid)]
+
+
+
+clinical$subject<-meta_data$subject[match(clinical$individualID,meta_data$individualID)]
+full_set<-merge(clinical,indi_meta, by="subject" )
+```
+
+### Scale by total immune cells and filter out low cell counts
+
+```{r}
+full_set<-full_set %>% mutate(norm_lipid= Lipid/total_cells)
+final<-full_set %>% filter(total_cells > 50)
+```
+
+### Abundance Analysis
+
+```{r}
+lipid<-Abudance_analysis(final,column = "norm_lipid",log_prop =  FALSE,covariates =  COVARIATES, disease = "Pathologic_diagnosis_of_AD")
+```
+
+```{r}
+lipid$wilcox_test
+```
+
+```{r}
+lipid$model %>% summary()
+```
+
+```{r fig.height=6, fig.width=4}
+plot2 <- ggplot() +
+    geom_violin(data = final, aes(y = norm_lipid, Pathologic_diagnosis_of_AD, fill = Pathologic_diagnosis_of_AD)) + geom_jitter (data = final, aes(y = norm_lipid, Pathologic_diagnosis_of_AD, fill = Pathologic_diagnosis_of_AD),width = 0.25, size=0.5)+
+         labs(y = "Lipid Processing Microglia (fraction of total immune cells)",
+         x = NULL) + theme_classic()+scale_x_discrete(labels = c("no" = "Control", "yes" = "AD (PathDx)")) +scale_fill_manual(values=c("#999999", "#a256e9"))+ theme(legend.position="none",axis.text.x =element_text(size=14.5,face="bold"),axis.title=element_text(size=14.5))
+         
+plot2
+```
+
+### APOE4 Analysis
+
+```{r}
+multivar<-glm(norm_lipid~pmi.y+msex.x+Pathologic_diagnosis_of_AD+age_death.y+as.factor(apoe_genotype),data=final)
+summary(multivar)
+```
+
+### TableOne
+
+```{r}
+library(tableone)
+library(labelled)
+
+cd8_tab<-final %>% filter(Lipid>0)
+# Add variable labels
+var_label(cd8_tab$age_death.y) <- "Age at Death (years)"
+var_label(cd8_tab$msex.x) <- "Sex"
+var_label(cd8_tab$pmi.y) <- "PMI"
+var_label(cd8_tab$pmi.y) <- "APOE_Genotype"
+## Vector of variables to summarize
+myVars <- c("msex.x","pmi.y","age_death.y","apoe_genotype")
+## Vector of categorical variables that need transformation
+catVars <- c("msex.x","age_death.y","apoe_genotype")
+## Create a TableOne object
+tab2 <- CreateTableOne(vars = myVars, data = cd8_tab, factorVars = catVars,strata="Pathologic_diagnosis_of_AD")
+tab2
+```
+
+```{r}
+tab2Mat <- print(tab2, exact = "stage", quote = FALSE, noSpaces = TRUE, printToggle = FALSE,varLabels=TRUE)
+## Save to a CSV file
+write.csv(tab2Mat, file = "../output/supplementary_tables/LPM_Table_APOE.csv")
+```
+

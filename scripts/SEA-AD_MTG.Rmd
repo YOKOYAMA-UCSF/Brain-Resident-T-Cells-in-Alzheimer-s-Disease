@@ -1,0 +1,235 @@
+---
+title: "SEA-AD_Replication"
+format: html
+editor: visual
+---
+
+# Replication of analysis from Rexach [paper](https://www.mdpi.com/2227-9059/12/2/308#app1-biomedicines-12-00308)
+
+### Set up
+
+```{r}
+
+source("configs/MTG_Config.R")
+source('utility_scripts/seurat_functions.R')
+```
+
+
+The analysis we are trying to recreate is from figure 2. Specifically where they find that there is an increased portion of CD8T cells in dementia patients.
+
+
+## Analysis workflow
+
+
+### Reading in the data
+
+```{r}
+immune_cells<-readRDS(paste0(PATH_TO_SEURAT_OBJ,".rds"))
+```
+
+### Fix Meta data
+
+```{r}
+colnames(immune_cells@meta.data) <- make.names(colnames(immune_cells@meta.data), unique=TRUE)
+```
+
+### Standard Seurat Clustering workflow
+
+Following best practices outlined by this workflow: <https://satijalab.org/seurat/articles/pbmc3k_tutorial.html>
+
+Sourced from seurat_functions.R
+
+```{r}
+set.seed(1)
+immune_list<-cluster_seurat(immune_cells)
+immune_list$DimPlot
+```
+
+
+Feature plot of all immune cells using CD247
+
+```{r fig.height= 10, fig.width=10}
+cust_feature(immune_list$seurat,c("ENSG00000198821"))
+```
+
+```{r fig.height=10, fig.width=20}
+VlnPlot(immune_list$seurat,assay="RNA",slot='data', features = c("ENSG00000198821"),raster=FALSE,pt.size = 0,ncol = 2) #Clusters 36 anad 20 are the lymphocytes
+```
+
+
+**Total Immune**
+
+```{r}
+# Count total number of cells
+nrow(immune_list$seurat@meta.data) # 40000
+
+# Count the total number of donors
+length(unique(immune_list$seurat@meta.data$donor_id)) # 89
+
+```
+
+
+### Lymphocyte Extraction
+
+```{r}
+#filter for clusters of interest
+lymphocytes<-subset(x=immune_list$seurat,subset =(seurat_clusters==20)|(seurat_clusters==36))
+
+# Count total number of cells
+lymphocytes@meta.data %>% dplyr::filter(donor_id != "H20.33.004") %>% nrow()# 584
+
+# Count the total number of donors
+length(unique(lymphocytes@meta.data$donor_id)) # 79
+```
+
+### Subcluster Lymphocytes
+
+```{r fig.height=4, fig.width=6}
+seurat<-lymphocytes
+set.seed(1)
+seurat <- NormalizeData(object = seurat)
+seurat <- FindVariableFeatures(object = seurat,selection.method = "vst", nfeatures = 2000)
+seurat <- ScaleData(object = seurat)
+seurat <- RunPCA(object = seurat)
+seurat <- FindNeighbors(object = seurat, dims = 1:20)
+seurat <- FindClusters(object = seurat, resolution = 1.2)
+seurat <- RunUMAP(object = seurat, dims = 1:20)
+plot<-DimPlot(object = seurat, reduction = "umap",label = T,label.size = 5)
+lympho_list<-list(seurat=seurat,
+               DimPlot=plot)
+
+ggsave("../output/figure_3/panel_3_a.tiff", plot = lympho_list$DimPlot,
+       width = 6, height = 4, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")     
+lympho_list$DimPlot
+```
+### Filtering Lymphocytes
+
+```{r fig.height=4, fig.width=6}
+library(patchwork)  # for combining plots
+
+# Ensembl IDs and gene symbols
+features <- c("ENSG00000010610","ENSG00000153563","ENSG00000172116",
+              "ENSG00000160654","ENSG00000198851", 
+              "ENSG00000149294")
+
+gene_symbols <- c("CD4", "CD8A", "CD8B", "CD3D", "CD3E", "NCAM1")
+
+# Create the list of plots
+plots <- VlnPlot(lympho_list$seurat, features = features, pt.size = 0.1)
+
+# Rename titles using gene symbols
+for (i in seq_along(plots)) {
+  plots[[i]] <- plots[[i]] + ggtitle(gene_symbols[i])
+}
+
+# Combine into one figure
+combined_plot <- wrap_plots(plots)
+#Save figure
+ggsave("../output/figure_3/panel_3_b.tiff", plot = combined_plot,
+       width = 6, height = 4, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")
+# Display
+combined_plot
+
+```
+
+
+Check number of cells and donors in each cluster
+
+```{r}
+lympho_list$seurat@meta.data %>% group_by(seurat_clusters) %>%summarise(n=n(),unique_donors=length(base::unique(donor_id))) # 2 is NK, #
+```
+
+
+Assign cluster identities
+
+```{r}
+# Recode Cluster names
+lympho_list$seurat@meta.data$seurat_clusters <- recode(lympho_list$seurat@meta.data$seurat_clusters %>% as.factor(), `0` = "CD8+", `1` = "Indi",
+                                                      `2`= "NK",
+                                                     `3`="CD8+",
+                                                    `4`="CD8+",
+                                                     `5`="CD4+",
+                                                     `6`="Indi",
+                                                    `7`="CD8+",
+                                                    `8`="Mystery",
+                                                    `9`="CD8+")
+#Pull meta data
+lympho_meta<-lympho_list$seurat@meta.data
+```
+
+Set up for abundance test
+
+```{r}
+# Getting Subclusters at the individual level
+individual_sub_clust<-lympho_list$seurat@meta.data %>% group_by(donor_id,seurat_clusters) %>% summarise(count=n())
+individual_total_cells<-immune_list$seurat@meta.data %>% group_by(donor_id) %>% summarise(count=n())
+
+# Pivot to column format
+individual_sub_clust<-pivot_wider(individual_sub_clust, id_cols = donor_id,values_from = count,names_from = seurat_clusters)
+
+# Merge with clinical meta data on idividaul basis
+# Pull invidual meta data
+clinical<-immune_list$seurat@meta.data %>% dplyr::select(c("donor_id","PMI","sex","Cognitive.status","Age.at.death","Braak.stage","APOE4.status")) %>% distinct()
+#Merge
+clinical<- merge(clinical,individual_sub_clust,by="donor_id")
+# Get total cells
+clinical$total_cells<-individual_total_cells$count[match(clinical$donor_id,individual_total_cells$donor_id)]
+
+# Add new columns
+clinical<-clinical %>% mutate(norm_CD8= `CD8+`/total_cells,norm_NK= `NK`/total_cells,norm_CD4= `CD4+`/total_cells)
+
+```
+
+### Abundance analysis
+
+```{r}
+cd8<-Abudance_analysis(clinical, column = "norm_CD8",log_prop =  FALSE,covariates =  COVARIATES, disease = "Cognitive.status")
+```
+
+
+```{r}
+cd8$model %>% summary()
+```
+
+```{r}
+cd8$wilcox_test
+```
+
+```{r}
+cd8$chi_squared_test
+```
+
+```{r fig.width=6, fig.height=6}
+plot2 <- ggplot() +
+        geom_violin(data = clinical, aes(y = norm_CD8,x= Cognitive.status, fill = Cognitive.status)) + geom_jitter (data = clinical, aes(y = norm_CD8,x= Cognitive.status, fill = Cognitive.status),width = 0.1, size=0.5)+
+         labs(y = "CD8+ T cells (fraction of total immune cells)",
+         x = NULL) + theme_classic()+scale_fill_manual(values=c("#999999", "#6829e7"))+ theme(legend.position="none",axis.text.x =element_text(size=14,face="bold"),axis.title=element_text(size=15))
+ggsave("../output/figure_3/panel_3_b_1_cog_new.tiff", plot = plot2,
+       width = 6, height = 6, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")
+
+plot2
+```
+
+### Table One Generation
+
+```{r}
+library(tableone)
+clinical$Cognitive.status<-droplevels(clinical$Cognitive.status)
+filt_tab=clinical%>% filter(`CD8+`>0)
+## Vector of variables to summarize
+myVars <- c("sex","PMI","Age.at.death","APOE4.status")
+## Vector of categorical variables that need transformation
+catVars <- c("sex","PMI","Age.at.death","APOE4.status")
+## Create a TableOne object
+tab2 <- CreateTableOne(vars = myVars, data = filt_tab, factorVars = catVars,strata="Cognitive.status")
+tab2
+```
+
+```{r}
+tab2Mat <- print(tab2, exact = "stage", quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+## Save to a CSV file
+write.csv(tab2Mat, file = "../output/supplementary_tables/SEA_MTG_Table_APOE.csv")
+```
