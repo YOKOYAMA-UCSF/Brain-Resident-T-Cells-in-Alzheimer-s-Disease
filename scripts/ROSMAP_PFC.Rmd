@@ -1,0 +1,221 @@
+---
+vers---
+title: "ROSMAP_PFC"
+format: pdf
+editor: visual
+---
+
+# Sub clustering T cells
+
+The goal of this document is to perform sub clustering on the cells labeled as T-cells from the ROSMAP dataset in order to find CD8+ and CD4+ t-cells
+
+## Set up
+
+```{r}
+source("../scripts/configs/ROSMAP_PFC_Config.R")
+source("../scripts/utility_scripts/seurat_functions.R")
+```
+
+## Read in immune cell object to being subclustering
+
+```{r}
+# Read in immune cell dataset
+immune_cells<-readRDS(paste0(PATH_TO_SEURAT_OBJ,".rds"))
+
+```
+
+## Intial CLustering
+
+```{r}
+set.seed(13)
+immune_cells<-RunPCA(immune_cells %>% FindVariableFeatures() %>% ScaleData(), npcs  = 30, verbose = FALSE)
+immune_cells<-RunUMAP(immune_cells, reduction="pca",dims =1:30)
+immune_cells<-FindNeighbors(immune_cells,reduction="pca",dims= 1:30)
+immune_cells <- FindClusters(immune_cells, resolution = 0.5)
+```
+
+
+## Filter for "T Cells"
+
+```{r}
+Idents(object = immune_cells) <- "cell_type_high_resolution"
+t_cells<-subset(immune_cells, idents = "T cells")
+```
+
+### CLuster T cells
+```{r}
+set.seed(1)
+t_cells<-RunPCA(t_cells %>% FindVariableFeatures() %>% ScaleData(), npcs  = 30, verbose = FALSE)
+t_cells<-RunUMAP(t_cells, reduction="pca",dims =1:30)
+t_cells<-FindNeighbors(t_cells,reduction="pca",dims= 1:30)
+t_cells <- FindClusters(t_cells, resolution = 0.30)
+```
+
+```{r}
+p1=DimPlot(t_cells, reduction = "umap", group.by = "seurat_clusters", label = TRUE,
+              repel = TRUE,pt.size=1,raster=FALSE,label.size = 5)
+```
+
+```{r}
+ggsave("../output/figure_2/panel_2_A.tiff", plot = p1,
+       width = 6, height = 4, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")
+p1
+```
+
+
+
+```{r}
+dp<-DotPlot(object = t_cells, features = c("CD8A","CD8B","CD4","CD3E","CD3G","NCAM1"),scale = FALSE)+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+ggsave("../AD_Brain_T_Cell_Analysis/output/figure_2/panel_2_b_dot_plot_with_NCAM.tiff", plot = dp,
+       width = 6, height = 4, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")
+
+dp
+```
+
+
+```{r}
+t_cell_meta<-t_cells@meta.data
+table(t_cell_meta$cell_type_high_resolution)
+```
+
+# Sub cluster Abundance
+
+### Assign Cluster IDs
+
+```{r}
+t_cell_meta<-t_cells@meta.data
+t_cell_meta$seurat_clusters <- recode(t_cell_meta$seurat_clusters %>% as.factor(), `0` = "CD8+", `1` = "NK",
+                                                      `2`= "CD8+",
+                                                     `3`="Monocytes",
+                                                    `4`="B-cell",
+                                                     `5`="CD4+",
+                                                     `6`="Mystery")
+```
+
+
+### Read in Clinical data
+
+```{r}
+
+immune_meta<-immune_cells@meta.data
+meta_data<-read.csv(paste0(PATH_TO_META_DATA,".csv"))
+clinical<-read.csv(paste0(PATH_TO_CLINICAL_DATA,".csv"))
+indi_meta<-read.table(paste0(PATH_TO_INDIVIDUAL_META_DATA,".tsv"),header = TRUE)
+```
+
+Getting abundance levels
+
+```{r}
+# Getting Subclusters at the individual level
+individual_sub_clust<-t_cell_meta %>% group_by(projid,seurat_clusters) %>% summarise(count=n())
+individual_total_cells<-immune_meta %>% group_by(projid) %>% summarise(count=n())
+
+# Pivot to column format
+individual_sub_clust<-pivot_wider(individual_sub_clust, id_cols = projid,values_from = count,names_from = seurat_clusters)
+
+# Merge with clinical data
+clinical<- merge(clinical,individual_sub_clust,by="projid")
+clinical$total_cells<-individual_total_cells$count[match(clinical$projid,individual_total_cells$projid)]
+
+
+clinical$subject<-meta_data$subject[match(clinical$individualID,meta_data$individualID)]
+full_set<-merge(clinical,indi_meta, by="subject" )
+```
+
+### Check celltype frequency 
+
+```{r}
+colSums(!is.na(individual_sub_clust))
+```
+
+### Scale by total immune cells
+
+```{r}
+full_set<-full_set %>% mutate(norm_CD8= `CD8+`/total_cells,norm_NK= `NK`/total_cells,norm_B_cell= `B-cell`/total_cells,norm_CD4= `CD4+`/total_cells,norm_mono= `Monocytes`/total_cells)
+```
+
+## CD8+
+
+```{r}
+vio<- ggplot()+geom_violin(data = full_set, aes(y = norm_CD8, Pathologic_diagnosis_of_AD, fill = Pathologic_diagnosis_of_AD)) + geom_jitter (data = full_set, aes(y = norm_CD8, Pathologic_diagnosis_of_AD, fill = Pathologic_diagnosis_of_AD),width = 0.25, size=0.5)+
+         labs(y = "CD8+ T cells (fraction of total immune cells)",
+         x = NULL) + theme_classic()+scale_x_discrete(labels = c("no" = "Control", "yes" = "AD (PathDx)")) +scale_fill_manual(values=c("#999999", "#a256e9"))+ theme(legend.position="none",axis.text.x =element_text(size=14,face="bold"),axis.title=element_text(size=11.5))
+
+ggsave("../output/figure_2/panel_2_c.tiff", plot = vio,
+       width = 4, height = 6, units = "in", dpi = 600,
+       device = "tiff", compression = "lzw")
+
+vio
+```
+
+### tableone
+
+```{r}
+library(tableone)
+library(labelled)
+
+cd8_tab<-full_set %>% filter(norm_CD8>0)
+# Add variable labels
+var_label(cd8_tab$age_death.y) <- "Age at Death (years)"
+var_label(cd8_tab$msex.x) <- "Sex"
+var_label(cd8_tab$pmi.y) <- "PMI"
+var_label(cd8_tab$pmi.y) <- "APOE_Genotype"
+## Vector of variables to summarize
+myVars <- c("msex.x","pmi.y","age_death.y","apoe_genotype")
+## Vector of categorical variables that need transformation
+catVars <- c("msex.x","age_death.y","apoe_genotype")
+## Create a TableOne object
+tab2 <- CreateTableOne(vars = myVars, data = cd8_tab, factorVars = catVars,strata="Pathologic_diagnosis_of_AD")
+tab2
+```
+
+```{r}
+tab2Mat <- print(tab2, exact = "stage", quote = FALSE, noSpaces = TRUE, printToggle = FALSE,varLabels=TRUE)
+## Save to a CSV file
+write.csv(tab2Mat, file = "../output/supplementary_tables/PFC_Table_apoe.csv")
+```
+
+```{r}
+ggplot()+geom_violin(data = full_set,aes(y=log(norm_CD8),x=Pathologic_diagnosis_of_AD,fill=Pathologic_diagnosis_of_AD))+labs(title="LogNormalized CD8+ T cell Distribution by AD Diagnosis", y= "log-normalized  CD8+ T-cell Count", x="Pathologic Diagnosis of AD",fill="Pathologic Diagnosis of AD")+ scale_fill_ghibli_d("PonyoMedium")+stat_compare_means()
+```
+
+### Wilcox test
+
+```{r}
+wilcox.test(full_set$norm_CD8 ~ full_set$Pathologic_diagnosis_of_AD)
+```
+
+### Checking if missing is dependent on AD status
+
+```{r}
+full_set$CD8_cell_missing<- is.na(clinical$`CD8+`)*1
+AD_cell<-full_set%>%  group_by(Pathologic_diagnosis_of_AD,CD8_cell_missing)%>%summarise(count=n())
+
+# Get in correct format for Chi Squared tests
+chi_format<-pivot_wider(AD_cell, id_cols = CD8_cell_missing,values_from = count,names_from = Pathologic_diagnosis_of_AD) %>% subset(select=-c(CD8_cell_missing))
+chisq_AD <- chisq.test(chi_format)
+round(chisq_AD$expected,2)
+chisq_AD 
+```
+
+```{r}
+multivar<-glm(norm_CD8~pmi.y+msex.x+Pathologic_diagnosis_of_AD+age_death.y,data=full_set,family = "poisson")
+summary(multivar)
+```
+
+### With APOE4
+
+```{r}
+
+multivar<-glm(norm_CD8~pmi.y+msex.x+Pathologic_diagnosis_of_AD+age_death.y+as.factor(apoe_genotype),data=full_set)
+summary(multivar)
+```
+
+```{r}
+multivar<-glm(norm_CD8~pmi.y+msex.x+Pathologic_diagnosis_of_AD+age_death.y,data=full_set)
+summary(multivar)
+```
